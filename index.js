@@ -15,11 +15,13 @@ exports.handler = async (event) => {
   const bills = formData.bills.split(',').map(b => b.trim());
   console.log('Bills to process:', bills);
 
-  const rawPosition = (formData['Position'] || '').toLowerCase().trim();
-  const position = rawPosition.includes('support') ? 'For' :
-                   rawPosition.includes('oppose') ? 'Against' :
-                   rawPosition.includes('neutral') ? 'Neutral' : 'For';
-
+  // const rawPosition = (formData['Position'] || '').toLowerCase().trim();
+  // const position = rawPosition.includes('support') ? 'For' :
+  //                  rawPosition.includes('oppose') ? 'Against' :
+  //                  rawPosition.includes('neutral') ? 'Neutral' : 'For';
+  // Load bill positions from S3
+  const billPositions = await getBillPositions();
+  const defaultPosition = billPositions.default || 'Neutral';
 
   const testify = (formData['How do you wish to testify?'] || '').trim();
   
@@ -49,6 +51,10 @@ exports.handler = async (event) => {
 
     for (const billNumber of bills) {
       console.log(`Processing bill: ${billNumber}`);
+
+      // Get position for this bill
+    const position = billPositions[billNumber] || defaultPosition;
+    console.log(`Position for ${billNumber}: ${position}`);
 
       try {
         // STEP 1: Search for bill
@@ -124,10 +130,6 @@ exports.handler = async (event) => {
        await page
         .locator('label', { hasText: testify })
         .click();
-
-       
-
-    
 
         // Position
         await page.getByRole('combobox').click();
@@ -231,22 +233,44 @@ exports.handler = async (event) => {
       }
     }
 
-    await browser.close();
+ await browser.close();
 
-    // Generate presigned URL for screenshot
-   const presignedUrl = screenshotKey 
+// Check if all succeeded, all failed, or mixed
+const allSuccess = results.every(r => r.status === 'success');
+const allFailed = results.every(r => r.status === 'failed');
+const someSuccess = results.some(r => r.status === 'success');
+
+const presignedUrl = screenshotKey 
   ? `https://${process.env.SCREENSHOT_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${screenshotKey}`
   : null;
 
-    const billSummary = results.map(r =>
-      `• ${r.bill}: ${r.status === 'success' ? '✅ Submitted' : '❌ Failed' + (r.error ? ' - ' + r.error : '')}`
-    ).join('\n');
+const billSummary = results.map(r =>
+  `• ${r.bill}: ${r.status === 'success' ? '✅ Submitted' : '❌ Failed' + (r.error ? ' - ' + r.error : '')}`
+).join('\n');
 
-    // Admin email
-    await sendEmail(
-      process.env.NOTIFICATION_EMAIL,
-      `✅ Testimony Submitted - ${formData['First Name']} ${formData['Last Name']}`,
-      `Testimony submitted for ${formData['First Name']} ${formData['Last Name']}.
+// Determine subject and message based on outcome
+let adminSubject, userSubject, userMessage;
+
+if (allSuccess) {
+  adminSubject = `✅ Testimony Submitted - ${formData['First Name']} ${formData['Last Name']}`;
+  userSubject = `Your testimony has been submitted`;
+  userMessage = `We have successfully submitted your testimony to the Colorado Legislature on your behalf.`;
+} else if (allFailed) {
+  adminSubject = `❌ Testimony FAILED - ${formData['First Name']} ${formData['Last Name']}`;
+  userSubject = `Your testimony submission failed`;
+  userMessage = `We were unable to submit your testimony to the Colorado Legislature. Our team has been notified and will reach out to you shortly.`;
+} else {
+  adminSubject = `⚠️ Testimony Partially Submitted - ${formData['First Name']} ${formData['Last Name']}`;
+  userSubject = `Your testimony was partially submitted`;
+  userMessage = `Some of your bills were successfully submitted while others failed. See details below. Our team has been notified about the failed submissions.`;
+}
+
+
+// Admin email
+await sendEmail(
+  process.env.NOTIFICATION_EMAIL,
+  adminSubject,
+  `Testimony submission for ${formData['First Name']} ${formData['Last Name']}.
 
 Bills:
 ${billSummary}
@@ -255,30 +279,26 @@ Email: ${formData['Email']}
 Phone: ${formData['Phone']}
 Address: ${formData['Street Address']}, ${formData['City']}, CO ${formData['Zip Code']}
 
-Confirmation screenshot (valid 7 days):
-${presignedUrl || 'Not available'}`
-    );
+${presignedUrl ? `Confirmation screenshot:\n${presignedUrl}` : 'No screenshot available'}`
+);
 
-    // User confirmation email
-    await sendEmail(
-      formData['Email'],
-      `Your testimony has been submitted`,
-      `Hi ${formData['First Name']},
+// User confirmation email
+await sendEmail(
+  formData['Email'],
+  userSubject,
+  `Hi ${formData['First Name']},
 
-We have successfully submitted your testimony to the Colorado Legislature on your behalf.
+${userMessage}
 
 Bills submitted:
 ${billSummary}
 
-View your submission confirmation (link valid 7 days):
-${presignedUrl || 'Not available'}
+${presignedUrl ? `View confirmation:\n${presignedUrl}` : ''}
 
-Thank you for participating in the legislative process.
+${someSuccess ? 'Thank you for participating in the legislative process.\n\n' : ''}Rocky Mountain Gun Owners`
+);
 
-Rocky Mountain Gun Owners`
-    );
-
-    return { statusCode: 200, body: JSON.stringify({ success: true, results }) };
+return { statusCode: 200, body: JSON.stringify({ success: allSuccess, results }) };
 
   } catch (error) {
     console.error('Fatal error:', error.message);
@@ -324,7 +344,6 @@ async function uploadScreenshot(buffer, name, prefix) {
   return key;
 }
 
-
 async function sendEmail(to, subject, body) {
   const ses = new SESClient({ region: process.env.AWS_REGION });
   await ses.send(new SendEmailCommand({
@@ -336,4 +355,24 @@ async function sendEmail(to, subject, body) {
     }
   }));
   console.log('Email sent to:', to);
+}
+
+async function getBillPositions() {
+  const { GetObjectCommand } = require('@aws-sdk/client-s3');
+  const s3 = new S3Client({ region: process.env.AWS_REGION });
+  
+  try {
+    const response = await s3.send(new GetObjectCommand({
+      Bucket: process.env.SCREENSHOT_BUCKET,
+      Key: 'config/bill-positions.json'
+    }));
+    
+    const jsonString = await response.Body.transformToString();
+    const positions = JSON.parse(jsonString);
+    console.log('Loaded bill positions from S3:', positions);
+    return positions;
+  } catch (error) {
+    console.error('Error loading bill positions from S3:', error.message);
+    return { default: 'For' }; // Fallback
+  }
 }
