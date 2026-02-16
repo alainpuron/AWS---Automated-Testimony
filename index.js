@@ -15,17 +15,12 @@ exports.handler = async (event) => {
   const bills = formData.bills.split(',').map(b => b.trim());
   console.log('Bills to process:', bills);
 
-  // const rawPosition = (formData['Position'] || '').toLowerCase().trim();
-  // const position = rawPosition.includes('support') ? 'For' :
-  //                  rawPosition.includes('oppose') ? 'Against' :
-  //                  rawPosition.includes('neutral') ? 'Neutral' : 'For';
   // Load bill positions from S3
   const billPositions = await getBillPositions();
   const defaultPosition = billPositions.default || 'Neutral';
 
   const testify = (formData['How do you wish to testify?'] || '').trim();
-  
-  
+
   let chromium, playwright;
   try {
     chromium = require('@sparticuz/chromium');
@@ -35,9 +30,10 @@ exports.handler = async (event) => {
     return { statusCode: 500, body: JSON.stringify({ error: 'Browser dependencies not found: ' + e.message }) };
   }
 
-  let browser;
-  let screenshotKey;
-  const results = [];
+
+let browser;
+const screenshotKeys = [];
+const results = [];
 
   try {
     browser = await playwright.launch({
@@ -46,15 +42,16 @@ exports.handler = async (event) => {
       headless: true,
     });
 
-    const page = await browser.newPage();
-    page.setDefaultTimeout(30000);
-
     for (const billNumber of bills) {
       console.log(`Processing bill: ${billNumber}`);
 
       // Get position for this bill
-    const position = billPositions[billNumber] || defaultPosition;
-    console.log(`Position for ${billNumber}: ${position}`);
+      const position = billPositions[billNumber] || defaultPosition;
+      console.log(`Position for ${billNumber}: ${position}`);
+
+      // Create a fresh page for each bill
+      const page = await browser.newPage();
+      page.setDefaultTimeout(30000);
 
       try {
         // STEP 1: Search for bill
@@ -124,12 +121,7 @@ exports.handler = async (event) => {
         await page.waitForTimeout(2000);
         console.log('On Step 2');
 
-        // await page.getByLabel('Remotely via Zoom').check().catch(async () => {
-        //   await page.getByText('Remotely via Zoom', { exact: false }).click();
-        // });
-       await page
-        .locator('label', { hasText: testify })
-        .click();
+        await page.locator('label', { hasText: testify }).click();
 
         // Position
         await page.getByRole('combobox').click();
@@ -214,11 +206,13 @@ exports.handler = async (event) => {
 
         // Capture confirmation screenshot
         const confirmShot = await page.screenshot({ fullPage: true });
-        screenshotKey = await uploadScreenshot(confirmShot, `${data.lastName}-${billNumber}`, 'CONFIRM-');
+        const key = await uploadScreenshot(confirmShot, `${data.lastName}-${billNumber}`, 'CONFIRM-');
+        screenshotKeys.push(key);
 
         console.log(`Success for ${billNumber}`);
         results.push({ bill: billNumber, status: 'success' });
 
+       
       } catch (billError) {
         console.error(`Error on bill ${billNumber}:`, billError.message);
 
@@ -230,47 +224,48 @@ exports.handler = async (event) => {
         }
 
         results.push({ bill: billNumber, status: 'failed', error: billError.message });
+
+    
       }
     }
 
- await browser.close();
+    await browser.close();
 
-// Check if all succeeded, all failed, or mixed
-const allSuccess = results.every(r => r.status === 'success');
-const allFailed = results.every(r => r.status === 'failed');
-const someSuccess = results.some(r => r.status === 'success');
+    // Check if all succeeded, all failed, or mixed
+    const allSuccess = results.every(r => r.status === 'success');
+    const allFailed = results.every(r => r.status === 'failed');
+    const someSuccess = results.some(r => r.status === 'success');
 
-const presignedUrl = screenshotKey 
-  ? `https://${process.env.SCREENSHOT_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${screenshotKey}`
-  : null;
+   const screenshotUrls = screenshotKeys.map(key => 
+      `https://${process.env.SCREENSHOT_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`
+    ).join('\n');
 
-const billSummary = results.map(r =>
-  `• ${r.bill}: ${r.status === 'success' ? '✅ Submitted' : '❌ Failed' + (r.error ? ' - ' + r.error : '')}`
-).join('\n');
+    const billSummary = results.map(r =>
+      `• ${r.bill}: ${r.status === 'success' ? '✅ Submitted' : '❌ Failed' + (r.error ? ' - ' + r.error : '')}`
+    ).join('\n');
 
-// Determine subject and message based on outcome
-let adminSubject, userSubject, userMessage;
+    // Determine subject and message based on outcome
+    let adminSubject, userSubject, userMessage;
 
-if (allSuccess) {
-  adminSubject = `✅ Testimony Submitted - ${formData['First Name']} ${formData['Last Name']}`;
-  userSubject = `Your testimony has been submitted`;
-  userMessage = `We have successfully submitted your testimony to the Colorado Legislature on your behalf.`;
-} else if (allFailed) {
-  adminSubject = `❌ Testimony FAILED - ${formData['First Name']} ${formData['Last Name']}`;
-  userSubject = `Your testimony submission failed`;
-  userMessage = `We were unable to submit your testimony to the Colorado Legislature. Our team has been notified and will reach out to you shortly.`;
-} else {
-  adminSubject = `⚠️ Testimony Partially Submitted - ${formData['First Name']} ${formData['Last Name']}`;
-  userSubject = `Your testimony was partially submitted`;
-  userMessage = `Some of your bills were successfully submitted while others failed. See details below. Our team has been notified about the failed submissions.`;
-}
+    if (allSuccess) {
+      adminSubject = `✅ Testimony Submitted - ${formData['First Name']} ${formData['Last Name']}`;
+      userSubject = `Your testimony has been submitted`;
+      userMessage = `We have successfully submitted your testimony to the Colorado Legislature on your behalf.`;
+    } else if (allFailed) {
+      adminSubject = `❌ Testimony FAILED - ${formData['First Name']} ${formData['Last Name']}`;
+      userSubject = `Your testimony submission failed`;
+      userMessage = `We were unable to submit your testimony to the Colorado Legislature. Our team has been notified and will reach out to you shortly.`;
+    } else {
+      adminSubject = `⚠️ Testimony Partially Submitted - ${formData['First Name']} ${formData['Last Name']}`;
+      userSubject = `Your testimony was partially submitted`;
+      userMessage = `Some of your bills were successfully submitted while others failed. See details below. Our team has been notified about the failed submissions.`;
+    }
 
-
-// Admin email
-await sendEmail(
-  process.env.NOTIFICATION_EMAIL,
-  adminSubject,
-  `Testimony submission for ${formData['First Name']} ${formData['Last Name']}.
+    // Admin email
+    await sendEmail(
+      process.env.NOTIFICATION_EMAIL,
+      adminSubject,
+      `Testimony submission for ${formData['First Name']} ${formData['Last Name']}.
 
 Bills:
 ${billSummary}
@@ -279,26 +274,26 @@ Email: ${formData['Email']}
 Phone: ${formData['Phone']}
 Address: ${formData['Street Address']}, ${formData['City']}, CO ${formData['Zip Code']}
 
-${presignedUrl ? `Confirmation screenshot:\n${presignedUrl}` : 'No screenshot available'}`
-);
+${screenshotUrls ? `Confirmation screenshots:\n${screenshotUrls}` : 'No screenshots available'}`
+    );
 
-// User confirmation email
-await sendEmail(
-  formData['Email'],
-  userSubject,
-  `Hi ${formData['First Name']},
+    // User confirmation email
+    await sendEmail(
+      formData['Email'],
+      userSubject,
+      `Hi ${formData['First Name']},
 
 ${userMessage}
 
 Bills submitted:
 ${billSummary}
 
-${presignedUrl ? `View confirmation:\n${presignedUrl}` : ''}
+${screenshotUrls ? `View confirmations:\n${screenshotUrls}` : ''}
 
 ${someSuccess ? 'Thank you for participating in the legislative process.\n\n' : ''}Rocky Mountain Gun Owners`
-);
+    );
 
-return { statusCode: 200, body: JSON.stringify({ success: allSuccess, results }) };
+    return { statusCode: 200, body: JSON.stringify({ success: allSuccess, results }) };
 
   } catch (error) {
     console.error('Fatal error:', error.message);
@@ -308,7 +303,8 @@ return { statusCode: 200, body: JSON.stringify({ success: allSuccess, results })
         const pages = browser.contexts()[0].pages();
         if (pages.length > 0) {
           const screenshot = await pages[0].screenshot({ fullPage: true });
-          screenshotKey = await uploadScreenshot(screenshot, formData['Last Name'] || 'unknown', 'FATAL-');
+          const fatalKey = await uploadScreenshot(screenshot, formData['Last Name'] || 'unknown', 'FATAL-');
+          screenshotKeys.push(fatalKey);
         }
         await browser.close();
       } catch (e) {
@@ -324,7 +320,7 @@ return { statusCode: 200, body: JSON.stringify({ success: allSuccess, results })
 Email: ${formData['Email']}
 Error: ${error.message}
 
-Screenshot: ${screenshotKey || 'Not captured'}`
+Screenshots: ${screenshotKeys.join(', ') || 'Not captured'}`
     );
 
     return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
@@ -360,13 +356,13 @@ async function sendEmail(to, subject, body) {
 async function getBillPositions() {
   const { GetObjectCommand } = require('@aws-sdk/client-s3');
   const s3 = new S3Client({ region: process.env.AWS_REGION });
-  
+
   try {
     const response = await s3.send(new GetObjectCommand({
       Bucket: process.env.SCREENSHOT_BUCKET,
       Key: 'config/bill-positions.json'
     }));
-    
+
     const jsonString = await response.Body.transformToString();
     const positions = JSON.parse(jsonString);
     console.log('Loaded bill positions from S3:', positions);
