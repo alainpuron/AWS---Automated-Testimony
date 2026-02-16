@@ -20,6 +20,10 @@ exports.handler = async (event) => {
                    rawPosition.includes('oppose') ? 'Against' :
                    rawPosition.includes('neutral') ? 'Neutral' : 'For';
 
+
+  const testify = (formData['How do you wish to testify?'] || '').trim();
+  
+  
   let chromium, playwright;
   try {
     chromium = require('@sparticuz/chromium');
@@ -114,19 +118,14 @@ exports.handler = async (event) => {
         await page.waitForTimeout(2000);
         console.log('On Step 2');
 
-        await page.getByLabel('Remotely via Zoom').check().catch(async () => {
-          await page.getByText('Remotely via Zoom', { exact: false }).click();
-        });
+        // await page.getByLabel('Remotely via Zoom').check().catch(async () => {
+        //   await page.getByText('Remotely via Zoom', { exact: false }).click();
+        // });
+       await page
+        .locator('label', { hasText: testify })
+        .click();
+
        
-
-      //   const testifyMap = {
-      //   'in person': 'In person',
-      //   'zoom': 'Remotely via Zoom'
-      // };
-
-      //   // Click testimony method - target the label containing the exact text span
-      //   await page.locator(`label[data-react-aria-pressable]`).filter({ hasText: testifyMethod }).click();
-      //   await page.waitForTimeout(500);
 
     
 
@@ -276,7 +275,7 @@ ${presignedUrl || 'Not available'}
 
 Thank you for participating in the legislative process.
 
-Gun Rights Colorado`
+Rocky Mountain Gun Owners`
     );
 
     return { statusCode: 200, body: JSON.stringify({ success: true, results }) };
