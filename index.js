@@ -30,10 +30,9 @@ exports.handler = async (event) => {
     return { statusCode: 500, body: JSON.stringify({ error: 'Browser dependencies not found: ' + e.message }) };
   }
 
-
-let browser;
-const screenshotKeys = [];
-const results = [];
+  let browser;
+  const screenshotKeys = [];
+  const results = [];
 
   try {
     browser = await playwright.launch({
@@ -236,7 +235,7 @@ const results = [];
     const allFailed = results.every(r => r.status === 'failed');
     const someSuccess = results.some(r => r.status === 'success');
 
-   const screenshotUrls = screenshotKeys.map(key => 
+    const screenshotUrls = screenshotKeys.map(key => 
       `https://${process.env.SCREENSHOT_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`
     ).join('\n');
 
@@ -312,6 +311,8 @@ ${someSuccess ? 'Thank you for participating in the legislative process.\n\n' : 
       }
     }
 
+    const screenshotList = screenshotKeys.length > 0 ? screenshotKeys.join(', ') : 'Not captured';
+
     await sendEmail(
       process.env.NOTIFICATION_EMAIL,
       `❌ Testimony FAILED - ${formData['First Name']} ${formData['Last Name']}`,
@@ -320,7 +321,7 @@ ${someSuccess ? 'Thank you for participating in the legislative process.\n\n' : 
 Email: ${formData['Email']}
 Error: ${error.message}
 
-Screenshots: ${screenshotKeys.join(', ') || 'Not captured'}`
+Screenshots: ${screenshotList}`
     );
 
     return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
