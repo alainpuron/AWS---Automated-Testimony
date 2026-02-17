@@ -1,6 +1,5 @@
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
-
 exports.handler = async (event) => {
   console.log('Received event:', JSON.stringify(event, null, 2));
 
@@ -8,11 +7,37 @@ exports.handler = async (event) => {
   const formData = Object.fromEntries(body);
   console.log('Parsed form data:', formData);
 
-  if (formData.authorization !== 'on') {
+  // Validate immediately
+  const authField = formData.authorization || formData.Authorization;
+  if (authField !== 'on') {
     return { statusCode: 400, body: JSON.stringify({ error: 'Authorization not granted' }) };
   }
 
-  const bills = formData.bills.split(',').map(b => b.trim());
+  const billsField = formData.bills || formData['Select bill(s) to testify on'];
+  if (!billsField) {
+    return { statusCode: 400, body: JSON.stringify({ error: 'No bills selected' }) };
+  }
+
+  // RETURN SUCCESS IMMEDIATELY - DON'T WAIT
+  const response = {
+    statusCode: 202,
+    body: JSON.stringify({ 
+      message: 'Your testimony is being submitted. You will receive a confirmation email shortly.',
+      status: 'processing'
+    })
+  };
+
+  // Process in background (don't await)
+  processTestimony(formData).catch(err => {
+    console.error('Background processing error:', err);
+  });
+
+  return response;
+};
+
+async function processTestimony(formData) {
+  const billsField = formData.bills || formData['Select bill(s) to testify on'];
+  const bills = billsField.split(',').map(b => b.trim());
   console.log('Bills to process:', bills);
 
   // Load bill positions from S3
@@ -27,7 +52,7 @@ exports.handler = async (event) => {
     playwright = require('playwright-core').chromium;
   } catch (e) {
     console.error('Failed to load browser dependencies:', e);
-    return { statusCode: 500, body: JSON.stringify({ error: 'Browser dependencies not found: ' + e.message }) };
+    throw e;
   }
 
   let browser;
@@ -44,11 +69,9 @@ exports.handler = async (event) => {
     for (const billNumber of bills) {
       console.log(`Processing bill: ${billNumber}`);
 
-      // Get position for this bill
       const position = billPositions[billNumber] || defaultPosition;
       console.log(`Position for ${billNumber}: ${position}`);
 
-      // Create a fresh page for each bill
       const page = await browser.newPage();
       page.setDefaultTimeout(30000);
 
@@ -86,7 +109,6 @@ exports.handler = async (event) => {
 
         await page.click('button:has-text("Search")');
 
-        // Click Select link (it's an <a> tag, not a button)
         let selectClicked = false;
         for (let i = 0; i < 10; i++) {
           await page.waitForTimeout(2000);
@@ -106,7 +128,6 @@ exports.handler = async (event) => {
         if (!selectClicked) throw new Error('Could not find Select link after 10 attempts');
         await page.waitForTimeout(2000);
 
-        // Handle Keep and Continue if it appears
         try {
           await page.waitForSelector('button:has-text("Keep and Continue")', { timeout: 5000 });
           await page.click('button:has-text("Keep and Continue")');
@@ -120,13 +141,11 @@ exports.handler = async (event) => {
         await page.waitForTimeout(2000);
         console.log('On Step 2');
 
-        await page.locator('label', { hasText: testify }).click();
+        await page.locator('label[data-react-aria-pressable]').filter({ hasText: testify }).click();
 
-        // Position
         await page.getByRole('combobox').click();
         await page.getByRole('option', { name: position }).click();
 
-        // Representing Self
         await page.getByText('Self', { exact: false }).click();
 
         await page.evaluate(() => {
@@ -203,7 +222,6 @@ exports.handler = async (event) => {
 
         await page.waitForTimeout(5000);
 
-        // Capture confirmation screenshot
         const confirmShot = await page.screenshot({ fullPage: true });
         const key = await uploadScreenshot(confirmShot, `${data.lastName}-${billNumber}`, 'CONFIRM-');
         screenshotKeys.push(key);
@@ -211,7 +229,6 @@ exports.handler = async (event) => {
         console.log(`Success for ${billNumber}`);
         results.push({ bill: billNumber, status: 'success' });
 
-       
       } catch (billError) {
         console.error(`Error on bill ${billNumber}:`, billError.message);
 
@@ -223,14 +240,11 @@ exports.handler = async (event) => {
         }
 
         results.push({ bill: billNumber, status: 'failed', error: billError.message });
-
-    
       }
     }
 
     await browser.close();
 
-    // Check if all succeeded, all failed, or mixed
     const allSuccess = results.every(r => r.status === 'success');
     const allFailed = results.every(r => r.status === 'failed');
     const someSuccess = results.some(r => r.status === 'success');
@@ -243,7 +257,6 @@ exports.handler = async (event) => {
       `• ${r.bill}: ${r.status === 'success' ? '✅ Submitted' : '❌ Failed' + (r.error ? ' - ' + r.error : '')}`
     ).join('\n');
 
-    // Determine subject and message based on outcome
     let adminSubject, userSubject, userMessage;
 
     if (allSuccess) {
@@ -260,7 +273,8 @@ exports.handler = async (event) => {
       userMessage = `Some of your bills were successfully submitted while others failed. See details below. Our team has been notified about the failed submissions.`;
     }
 
-    // Admin email
+    const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
+    
     await sendEmail(
       process.env.NOTIFICATION_EMAIL,
       adminSubject,
@@ -276,7 +290,6 @@ Address: ${formData['Street Address']}, ${formData['City']}, CO ${formData['Zip 
 ${screenshotUrls ? `Confirmation screenshots:\n${screenshotUrls}` : 'No screenshots available'}`
     );
 
-    // User confirmation email
     await sendEmail(
       formData['Email'],
       userSubject,
@@ -291,8 +304,6 @@ ${screenshotUrls ? `View confirmations:\n${screenshotUrls}` : ''}
 
 ${someSuccess ? 'Thank you for participating in the legislative process.\n\n' : ''}Rocky Mountain Gun Owners`
     );
-
-    return { statusCode: 200, body: JSON.stringify({ success: allSuccess, results }) };
 
   } catch (error) {
     console.error('Fatal error:', error.message);
@@ -323,12 +334,12 @@ Error: ${error.message}
 
 Screenshots: ${screenshotList}`
     );
-
-    return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
   }
-};
+}
 
+// Keep all the helper functions the same...
 async function uploadScreenshot(buffer, name, prefix) {
+  const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
   const s3 = new S3Client({ region: process.env.AWS_REGION });
   const key = `testimony/${prefix}${Date.now()}-${name}.png`;
   await s3.send(new PutObjectCommand({
@@ -342,6 +353,7 @@ async function uploadScreenshot(buffer, name, prefix) {
 }
 
 async function sendEmail(to, subject, body) {
+  const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
   const ses = new SESClient({ region: process.env.AWS_REGION });
   await ses.send(new SendEmailCommand({
     Source: process.env.NOTIFICATION_EMAIL,
@@ -356,6 +368,7 @@ async function sendEmail(to, subject, body) {
 
 async function getBillPositions() {
   const { GetObjectCommand } = require('@aws-sdk/client-s3');
+  const { S3Client } = require('@aws-sdk/client-s3');
   const s3 = new S3Client({ region: process.env.AWS_REGION });
 
   try {
@@ -370,6 +383,6 @@ async function getBillPositions() {
     return positions;
   } catch (error) {
     console.error('Error loading bill positions from S3:', error.message);
-    return { default: 'For' }; // Fallback
+    return { default: 'For' };
   }
 }
