@@ -1,5 +1,6 @@
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
+
 exports.handler = async (event) => {
   console.log('Received event:', JSON.stringify(event, null, 2));
 
@@ -7,36 +8,49 @@ exports.handler = async (event) => {
   const formData = Object.fromEntries(body);
   console.log('Parsed form data:', formData);
 
-  // Validate immediately
-  const authField = formData.authorization || formData.Authorization;
-  if (authField !== 'on') {
-    return { statusCode: 400, body: JSON.stringify({ error: 'Authorization not granted' }) };
-  }
+  // Handle both field name variations
+const authField = formData.authorization || formData.Authorization;
+if (authField !== 'on') {
+  return { statusCode: 400, body: JSON.stringify({ error: 'Authorization not granted' }) };
+}
 
-  const billsField = formData.bills || formData['Select bill(s) to testify on'];
-  if (!billsField) {
-    return { statusCode: 400, body: JSON.stringify({ error: 'No bills selected' }) };
-  }
+const billsField = formData.bills || formData['Select bill(s) to testify on'];
+if (!billsField || billsField.trim() === '') {
+  // Send email notification to user
+  await sendEmail(
+    formData['Email'],
+    'Action Required - No Bills Selected',
+    `Hi ${formData['First Name']},
 
-  // RETURN SUCCESS IMMEDIATELY - DON'T WAIT
-  const response = {
-    statusCode: 202,
+We received your testimony submission, but no bills were selected.
+
+To submit your testimony, please return to the form and select at least one bill:
+https://rmgo.org/testify/
+
+If you need assistance, please contact us at ${process.env.NOTIFICATION_EMAIL}
+
+Rocky Mountain Gun Owners`
+  );
+  
+  // Also notify admin
+  await sendEmail(
+    process.env.NOTIFICATION_EMAIL,
+    `⚠️ Incomplete Submission - ${formData['First Name']} ${formData['Last Name']}`,
+    `User submitted form without selecting any bills.
+
+Name: ${formData['First Name']} ${formData['Last Name']}
+Email: ${formData['Email']}
+Phone: ${formData['Phone']}`
+  );
+  
+  return { 
+    statusCode: 400, 
     body: JSON.stringify({ 
-      message: 'Your testimony is being submitted. You will receive a confirmation email shortly.',
-      status: 'processing'
-    })
+      error: 'No bills selected. Please check your email for instructions.' 
+    }) 
   };
+}
 
-  // Process in background (don't await)
-  processTestimony(formData).catch(err => {
-    console.error('Background processing error:', err);
-  });
-
-  return response;
-};
-
-async function processTestimony(formData) {
-  const billsField = formData.bills || formData['Select bill(s) to testify on'];
   const bills = billsField.split(',').map(b => b.trim());
   console.log('Bills to process:', bills);
 
@@ -52,7 +66,7 @@ async function processTestimony(formData) {
     playwright = require('playwright-core').chromium;
   } catch (e) {
     console.error('Failed to load browser dependencies:', e);
-    throw e;
+    return { statusCode: 500, body: JSON.stringify({ error: 'Browser dependencies not found: ' + e.message }) };
   }
 
   let browser;
@@ -76,7 +90,6 @@ async function processTestimony(formData) {
       page.setDefaultTimeout(30000);
 
       try {
-        // STEP 1: Search for bill
         await page.goto('https://sites.coleg.gov/public-testimony/sign-up-to-testify/step-1', {
           waitUntil: 'domcontentloaded',
           timeout: 30000
@@ -136,7 +149,6 @@ async function processTestimony(formData) {
           console.log('No Keep and Continue, proceeding');
         }
 
-        // STEP 2: Testimony options
         await page.waitForURL('**/step-2', { timeout: 15000 });
         await page.waitForTimeout(2000);
         console.log('On Step 2');
@@ -154,7 +166,6 @@ async function processTestimony(formData) {
           if (next) next.click();
         });
 
-        // STEP 3: Personal info
         await page.waitForURL('**/step-3', { timeout: 15000 });
         await page.waitForTimeout(2000);
         console.log('On Step 3');
@@ -209,7 +220,6 @@ async function processTestimony(formData) {
           if (next) next.click();
         });
 
-        // STEP 4: Review and submit
         await page.waitForURL('**/step-4', { timeout: 15000 });
         await page.waitForTimeout(2000);
         console.log('On Step 4');
@@ -273,8 +283,6 @@ async function processTestimony(formData) {
       userMessage = `Some of your bills were successfully submitted while others failed. See details below. Our team has been notified about the failed submissions.`;
     }
 
-    const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
-    
     await sendEmail(
       process.env.NOTIFICATION_EMAIL,
       adminSubject,
@@ -305,6 +313,8 @@ ${screenshotUrls ? `View confirmations:\n${screenshotUrls}` : ''}
 ${someSuccess ? 'Thank you for participating in the legislative process.\n\n' : ''}Rocky Mountain Gun Owners`
     );
 
+    return { statusCode: 200, body: JSON.stringify({ success: allSuccess, results }) };
+
   } catch (error) {
     console.error('Fatal error:', error.message);
 
@@ -334,12 +344,12 @@ Error: ${error.message}
 
 Screenshots: ${screenshotList}`
     );
-  }
-}
 
-// Keep all the helper functions the same...
+    return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
+  }
+};
+
 async function uploadScreenshot(buffer, name, prefix) {
-  const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
   const s3 = new S3Client({ region: process.env.AWS_REGION });
   const key = `testimony/${prefix}${Date.now()}-${name}.png`;
   await s3.send(new PutObjectCommand({
@@ -353,7 +363,6 @@ async function uploadScreenshot(buffer, name, prefix) {
 }
 
 async function sendEmail(to, subject, body) {
-  const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
   const ses = new SESClient({ region: process.env.AWS_REGION });
   await ses.send(new SendEmailCommand({
     Source: process.env.NOTIFICATION_EMAIL,
@@ -367,8 +376,6 @@ async function sendEmail(to, subject, body) {
 }
 
 async function getBillPositions() {
-  const { GetObjectCommand } = require('@aws-sdk/client-s3');
-  const { S3Client } = require('@aws-sdk/client-s3');
   const s3 = new S3Client({ region: process.env.AWS_REGION });
 
   try {
