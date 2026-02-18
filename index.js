@@ -15,6 +15,7 @@ if (authField !== 'on') {
 }
 
 const billsField = formData.bills || formData['Select bill(s) to testify on'];
+
 if (!billsField || billsField.trim() === '') {
   // Send email notification to user
   await sendEmail(
