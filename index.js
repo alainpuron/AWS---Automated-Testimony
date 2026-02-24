@@ -26,7 +26,7 @@ if (!billsField || billsField.trim() === '') {
 We received your testimony submission, but no bills were selected.
 
 To submit your testimony, please return to the form and select at least one bill:
-https://rmgo.org/testify/
+<url>
 
 If you need assistance, please contact us at ${process.env.NOTIFICATION_EMAIL}
 
