@@ -1,0 +1,57 @@
+/* Hide the default checkbox */
+.elementor-field-type-checkbox .elementor-field-option input[type="checkbox"] {
+    position: absolute;
+    opacity: 0;
+}
+
+/* Add spacing between toggles */
+.elementor-field-type-checkbox .elementor-field-option {
+    margin-bottom: 15px;
+    display: block;
+}
+
+/* Toggle switch background */
+.elementor-field-type-checkbox .elementor-field-option label {
+    position: relative;
+    padding-left: 60px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+}
+
+.elementor-field-type-checkbox .elementor-field-option label:before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 50px;
+    height: 28px;
+    background-color: #ccc;
+    border-radius: 28px;
+    transition: background-color 0.3s;
+}
+
+/* Toggle slider circle */
+.elementor-field-type-checkbox .elementor-field-option label:after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 20px;
+    height: 20px;
+    background-color: white;
+    border-radius: 50%;
+    transition: all 0.3s;
+}
+
+/* When checked */
+.elementor-field-type-checkbox .elementor-field-option input[type="checkbox"]:checked + label:before {
+    background-color: #00B050;
+}
+
+.elementor-field-type-checkbox .elementor-field-option input[type="checkbox"]:checked + label:after {
+    left: 26px;
+}

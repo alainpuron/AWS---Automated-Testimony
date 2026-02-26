@@ -1,0 +1,46 @@
+{
+  "bills": [
+    {
+      "number": "HB26-1037",
+      "title": "The Fourth Amendment is Not for Sale",
+      "position": "For",
+      "deadline": "2026-02-25T13:30:00-07:00",
+      "hearing_date": "February 25, 2026",
+      "hearing_time": "1:30 PM",
+      "location": "HCR 0107",
+      "committee": "House Judiciary Committee"
+    },
+    {
+      "number": "HB26-1072",
+      "title": "Red Flag Repeal",
+      "position": "For",
+      "deadline": "2026-03-02T13:30:00-07:00",
+      "hearing_date": "March 2, 2026",
+      "hearing_time": "1:30 PM",
+      "location": "Old State Library",
+      "committee": "House State Affairs Committee"
+    },
+    {
+      "number": "SB26-004",
+      "title": "School Sponsored Home Raids",
+      "position": "Against",
+      "deadline": "2026-03-02T13:30:00-07:00",
+      "hearing_date": "March 2, 2026",
+      "hearing_time": "1:30 PM",
+      "location": "Old State Library",
+      "committee": "House State Affairs Committee"
+    },
+   
+    {
+      "number": "HB26-1126",
+      "title": "Gun Shop Abolition Act",
+      "position": "Against",
+      "deadline": "2026-03-02T13:30:00-07:00",
+      "hearing_date": "March 2, 2026",
+      "hearing_time": "1:30 PM",
+      "location": "Old State Library",
+      "committee": "House State Affairs Committee"
+    }
+  ],
+  "default_position": "Neutral"
+}
