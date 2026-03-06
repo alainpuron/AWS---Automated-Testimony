@@ -1,12 +1,31 @@
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
 
+// Dynamo DB
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
+
+
 exports.handler = async (event) => {
   console.log('Received event:', JSON.stringify(event, null, 2));
 
-  const body = new URLSearchParams(event.body);
-  const formData = Object.fromEntries(body);
-  console.log('Parsed form data:', formData);
+  const params = new URLSearchParams(event.body);
+  const formData = {};
+
+for (const [key, value] of params.entries()) {
+  if (formData[key]) {
+    // If already exists, convert to array or push into it
+    if (Array.isArray(formData[key])) {
+      formData[key].push(value);
+    } else {
+      formData[key] = [formData[key], value];
+    }
+  } else {
+    formData[key] = value;
+  }
+}
+
+console.log('Parsed form data:', formData);
 
   // Handle both field name variations
 const authField = formData.authorization || formData.Authorization;
@@ -14,9 +33,28 @@ if (authField !== 'on') {
   return { statusCode: 400, body: JSON.stringify({ error: 'Authorization not granted' }) };
 }
 
-const billsField = formData.bills || formData['Select bill(s) to testify on'];
+  
+// Try multiple field name variations
+let billsField = formData['Select bill(s) to testify on'] ||  // Spaces
+                 formData['Select_bill(s)_to_testify_on'] ||  // Underscores
+                 formData['form_fields[bills][]'] ||
+                 formData['bills'];
 
-if (!billsField || billsField.trim() === '') {
+if (!billsField) {
+  return {
+    statusCode: 400,
+    body: JSON.stringify({ error: 'No bills selected.' })
+  };
+}
+
+const bills = Array.isArray(billsField)
+  ? billsField
+  : [billsField];
+
+// Remove empty values just in case
+const filteredBills = bills.filter(b => b && b.trim() !== '');
+
+if (filteredBills.length === 0) {
   // Send email notification to user
   await sendEmail(
     formData['Email'],
@@ -26,14 +64,13 @@ if (!billsField || billsField.trim() === '') {
 We received your testimony submission, but no bills were selected.
 
 To submit your testimony, please return to the form and select at least one bill:
-https://rmgo.org/testify/
+<url>
 
 If you need assistance, please contact us at ${process.env.NOTIFICATION_EMAIL}
 
 Rocky Mountain Gun Owners`
   );
-  
-  // Also notify admin
+
   await sendEmail(
     process.env.NOTIFICATION_EMAIL,
     `⚠️ Incomplete Submission - ${formData['First Name']} ${formData['Last Name']}`,
@@ -43,17 +80,17 @@ Name: ${formData['First Name']} ${formData['Last Name']}
 Email: ${formData['Email']}
 Phone: ${formData['Phone']}`
   );
-  
-  return { 
-    statusCode: 400, 
-    body: JSON.stringify({ 
-      error: 'No bills selected. Please check your email for instructions.' 
-    }) 
+
+  return {
+    statusCode: 400,
+    body: JSON.stringify({
+      error: 'No bills selected. Please check your email for instructions.'
+    })
   };
 }
 
-  const bills = billsField.split(',').map(b => b.trim());
-  console.log('Bills to process:', bills);
+console.log('Bills to process:', filteredBills);
+
 
   // Load bill positions from S3
   const billPositions = await getBillPositions();
@@ -81,7 +118,7 @@ Phone: ${formData['Phone']}`
       headless: true,
     });
 
-    for (const billNumber of bills) {
+    for (const billNumber of filteredBills) {
       console.log(`Processing bill: ${billNumber}`);
 
       const position = billPositions[billNumber] || defaultPosition;
@@ -95,6 +132,7 @@ Phone: ${formData['Phone']}`
           waitUntil: 'domcontentloaded',
           timeout: 30000
         });
+
         await page.waitForTimeout(5000);
         console.log('On Step 1');
 
@@ -314,6 +352,17 @@ ${screenshotUrls ? `View confirmations:\n${screenshotUrls}` : ''}
 ${someSuccess ? 'Thank you for participating in the legislative process.\n\n' : ''}Rocky Mountain Gun Owners`
     );
 
+    // Save to database
+  try {
+  const submissionId = await saveSubmission(formData, filteredBills, results);
+  console.log('Saved submission:', submissionId);
+} catch (dbError) {
+  console.error('Failed to save to database:', dbError);
+  // Don't fail the whole process if DB write fails
+}
+
+
+
     return { statusCode: 200, body: JSON.stringify({ success: allSuccess, results }) };
 
   } catch (error) {
@@ -379,10 +428,10 @@ async function sendEmail(to, subject, body) {
 async function getBillPositions() {
   const s3 = new S3Client({ region: process.env.AWS_REGION });
 
-  try {
+ try {
     const response = await s3.send(new GetObjectCommand({
       Bucket: process.env.SCREENSHOT_BUCKET,
-      Key: 'config/bill-positions.json'
+      Key: process.env.BILL_POSITIONS_FILE
     }));
 
     const jsonString = await response.Body.transformToString();
@@ -393,4 +442,44 @@ async function getBillPositions() {
     console.error('Error loading bill positions from S3:', error.message);
     return { default: 'For' };
   }
+}
+
+
+// Dynamo DB 
+async function saveSubmission(formData, bills, results) {
+  const dynamodb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION }));
+  
+    const submission = {
+    // Identification & Timestamp
+    submission_id: `SUB-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    timestamp: Date.now(),
+    date: new Date().toISOString(),
+    
+    // Personal Information
+    first_name: formData['First Name'],
+    last_name: formData['Last Name'],
+    email: formData['Email'],
+    phone: formData['Phone'],
+    
+    // Address
+    street: formData['Street Address'],
+    city: formData['City'],
+    zip: formData['Zip Code'],
+    
+    // Testimony Details
+    bills: bills,
+    testify_method: formData['How do you wish to testify?'],
+    
+    // Status & Results
+    all_success: results.every(r => r.status === 'success'),
+    results: results
+  };
+  
+  await dynamodb.send(new PutCommand({
+    TableName: process.env.DYNAMODB,
+    Item: submission
+  }));
+  
+  console.log('Submission saved to DynamoDB:', submission.submission_id);
+  return submission.submission_id;
 }
