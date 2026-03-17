@@ -49,7 +49,7 @@ if (!billsField) {
 
 const bills = Array.isArray(billsField)
   ? billsField
-  : [billsField];
+  : billsField.split(',').map(b => b.trim());
 
 // Remove empty values just in case
 const filteredBills = bills.filter(b => b && b.trim() !== '');
@@ -94,7 +94,7 @@ console.log('Bills to process:', filteredBills);
 
   // Load bill positions from S3
   const billPositions = await getBillPositions();
-  const defaultPosition = billPositions.default || 'Neutral';
+  const defaultPosition = billPositions.default_position || billPositions.default || 'Neutral';
 
   const testify = (formData['How do you wish to testify?'] || '').trim();
 
@@ -121,7 +121,15 @@ console.log('Bills to process:', filteredBills);
     for (const billNumber of filteredBills) {
       console.log(`Processing bill: ${billNumber}`);
 
-      const position = billPositions[billNumber] || defaultPosition;
+     let position;
+if (Array.isArray(billPositions.bills)) {
+  // New format: search array
+  const billInfo = billPositions.bills.find(b => b.number === billNumber);
+  position = billInfo ? billInfo.position : defaultPosition;
+} else {
+  // Old format: direct lookup
+  position = billPositions[billNumber] || defaultPosition;
+}
       console.log(`Position for ${billNumber}: ${position}`);
 
       const page = await browser.newPage();
